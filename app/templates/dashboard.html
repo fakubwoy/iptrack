@@ -1,0 +1,195 @@
+{% extends "base.html" %}
+{% block title %}Dashboard – IPTrack India{% endblock %}
+{% block content %}
+<style>
+  .dash-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.75rem; }
+  .dash-header h1 { font-size: 1.4rem; font-weight: 700; }
+  .dash-header .sub { font-size: .875rem; color: var(--text-muted); margin-top: .2rem; }
+
+  .filings-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
+    gap: 1rem;
+  }
+
+  .filing-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.2rem;
+    position: relative;
+    transition: border-color .2s;
+  }
+  .filing-card:hover { border-color: #3a3f5c; }
+  .filing-card .fc-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: .75rem; }
+  .fc-app-no { font-size: 1rem; font-weight: 700; color: var(--text); }
+  .fc-label { font-size: .82rem; color: var(--text-muted); margin-top: .15rem; }
+  .fc-status {
+    margin: .75rem 0;
+    padding: .6rem .9rem;
+    background: var(--surface2);
+    border-radius: 8px;
+    font-size: .875rem;
+    border-left: 3px solid var(--border);
+    word-break: break-word;
+  }
+  .fc-status.has-status { border-left-color: var(--success); }
+  .fc-status.error      { border-left-color: var(--warning); }
+  .fc-meta { font-size: .78rem; color: var(--text-muted); margin-bottom: .9rem; }
+  .fc-actions { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+  .btn-check {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: .4rem .85rem;
+    border-radius: 7px;
+    font-size: .8rem;
+    font-weight: 600;
+    cursor: pointer;
+    display: inline-flex; align-items: center; gap: .4rem;
+    transition: background .15s;
+  }
+  .btn-check:hover { background: #2a2e42; }
+
+  .alert-toggle {
+    font-size: .75rem;
+    padding: .35rem .7rem;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: none;
+    cursor: pointer;
+    color: var(--text-muted);
+    transition: all .15s;
+  }
+  .alert-toggle.on  { color: var(--success); border-color: rgba(34,197,94,.4); }
+  .alert-toggle.off { color: var(--text-muted); }
+
+  .empty-state {
+    text-align: center;
+    padding: 4rem 2rem;
+    color: var(--text-muted);
+  }
+  .empty-state svg { width: 48px; height: 48px; margin-bottom: 1rem; opacity: .4; }
+  .empty-state h2 { font-size: 1.1rem; color: var(--text); margin-bottom: .5rem; }
+  .empty-state p  { font-size: .875rem; }
+</style>
+
+<div class="dash-header">
+  <div>
+    <h1>Your IP Filings</h1>
+    <div class="sub">Status is auto-checked every {{ config.CHECK_INTERVAL_HOURS }}h. You can also check manually.</div>
+  </div>
+  <a href="{{ url_for('dashboard.add_filing') }}" class="btn btn-primary">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    Add Filing
+  </a>
+</div>
+
+{% if filings %}
+<div class="filings-grid">
+  {% for f in filings %}
+  <div class="filing-card" id="card-{{ f.id }}">
+    <div class="fc-top">
+      <div>
+        <div class="fc-app-no">{{ f.application_number }}</div>
+        {% if f.label %}<div class="fc-label">{{ f.label }}</div>{% endif %}
+      </div>
+      <span class="badge badge-{{ f.filing_type }}">{{ f.filing_type.title() }}</span>
+    </div>
+
+    <div class="fc-status {{ 'has-status' if f.last_status and 'error' not in (f.last_status or '').lower() else 'error' }}" id="status-{{ f.id }}">
+      {% if f.last_status %}
+        {{ f.last_status }}
+      {% else %}
+        <span style="color:var(--text-muted)">Not checked yet</span>
+      {% endif %}
+    </div>
+
+    <div class="fc-meta">
+      {% if f.last_checked_at %}
+        Last checked: {{ f.last_checked_ist().strftime('%d %b %Y, %I:%M %p IST') if f.last_checked_ist() }}
+      {% else %}
+        Never checked
+      {% endif %}
+      {% if f.last_changed_at %}
+        · Changed: {{ f.last_changed_at.strftime('%d %b %Y') }}
+      {% endif %}
+    </div>
+
+    <div class="fc-actions">
+      <button class="btn-check" onclick="manualCheck({{ f.id }}, this)">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+        </svg>
+        Check Now
+      </button>
+      <a href="{{ url_for('dashboard.filing_history', filing_id=f.id) }}" class="btn-check">History</a>
+      <button class="alert-toggle {{ 'on' if f.alerts_enabled else 'off' }}" id="alert-toggle-{{ f.id }}"
+              onclick="toggleAlerts({{ f.id }}, this)">
+        🔔 Alerts {{ 'ON' if f.alerts_enabled else 'OFF' }}
+      </button>
+      <form method="POST" action="{{ url_for('dashboard.delete_filing', filing_id=f.id) }}"
+            style="margin-left:auto" onsubmit="return confirm('Remove this filing?')">
+        <button type="submit" class="btn-danger-sm">✕ Remove</button>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty-state">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+  </svg>
+  <h2>No filings tracked yet</h2>
+  <p>Add your first trademark or design registration number to get started.</p>
+  <a href="{{ url_for('dashboard.add_filing') }}" class="btn btn-primary" style="margin-top:1.2rem;">Add Your First Filing</a>
+</div>
+{% endif %}
+
+{% endblock %}
+{% block extra_scripts %}
+<script>
+async function manualCheck(filingId, btn) {
+  const originalHTML = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Checking…';
+  const statusEl = document.getElementById(`status-${filingId}`);
+
+  try {
+    const res = await fetch(`/api/filings/${filingId}/check`, { method: 'POST' });
+    const data = await res.json();
+    if (data.ok) {
+      statusEl.textContent = data.status || 'No status returned';
+      statusEl.className = 'fc-status has-status';
+      showToast('Status updated successfully', 'success');
+    } else {
+      showToast(`Check failed: ${data.error}`, 'error');
+    }
+  } catch (e) {
+    showToast('Network error. Try again.', 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = originalHTML;
+  }
+}
+
+async function toggleAlerts(filingId, btn) {
+  try {
+    const res = await fetch(`/api/filings/${filingId}/toggle-alerts`, { method: 'POST' });
+    const data = await res.json();
+    if (data.ok) {
+      if (data.alerts_enabled) {
+        btn.textContent = '🔔 Alerts ON';
+        btn.className = 'alert-toggle on';
+        showToast('Alerts enabled', 'success');
+      } else {
+        btn.textContent = '🔔 Alerts OFF';
+        btn.className = 'alert-toggle off';
+        showToast('Alerts disabled', 'info');
+      }
+    }
+  } catch {}
+}
+</script>
+{% endblock %}

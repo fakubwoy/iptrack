@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}IPTrack India{% endblock %}</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #222535;
+      --border: #2e3245;
+      --accent: #4f6ef7;
+      --accent-hover: #3d58d4;
+      --success: #22c55e;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --info: #06b6d4;
+      --text: #e2e8f0;
+      --text-muted: #8892a4;
+      --radius: 10px;
+      --shadow: 0 4px 24px rgba(0,0,0,0.4);
+    }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    /* ── Nav ──────────────────────────────── */
+    nav {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 2rem;
+      height: 60px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .nav-brand {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--accent);
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+    }
+    .nav-brand svg { width: 22px; height: 22px; }
+    .nav-links { display: flex; align-items: center; gap: 1.2rem; }
+    .nav-links a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: .9rem;
+      font-weight: 500;
+      transition: color .15s;
+    }
+    .nav-links a:hover { color: var(--text); }
+    .bell-btn {
+      position: relative;
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: var(--text-muted);
+      transition: color .15s;
+      padding: 4px;
+    }
+    .bell-btn:hover { color: var(--text); }
+    .bell-badge {
+      position: absolute;
+      top: -2px; right: -2px;
+      background: var(--danger);
+      color: #fff;
+      border-radius: 50%;
+      font-size: 10px;
+      width: 16px; height: 16px;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 700;
+    }
+    .bell-badge.hidden { display: none; }
+
+    /* Notification dropdown */
+    .notif-dropdown {
+      position: absolute;
+      top: 54px; right: 1rem;
+      width: 340px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      z-index: 200;
+      display: none;
+      overflow: hidden;
+    }
+    .notif-dropdown.open { display: block; }
+    .notif-header {
+      padding: .75rem 1rem;
+      font-size: .8rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .notif-list { max-height: 320px; overflow-y: auto; }
+    .notif-item {
+      padding: .75rem 1rem;
+      border-bottom: 1px solid var(--border);
+      font-size: .85rem;
+      line-height: 1.4;
+    }
+    .notif-item:last-child { border-bottom: none; }
+    .notif-item .notif-time { font-size: .75rem; color: var(--text-muted); margin-top: .25rem; }
+    .notif-empty { padding: 1.2rem; text-align: center; color: var(--text-muted); font-size: .85rem; }
+    .notif-footer {
+      padding: .6rem 1rem;
+      border-top: 1px solid var(--border);
+      text-align: center;
+    }
+    .notif-footer a { font-size: .82rem; color: var(--accent); text-decoration: none; }
+
+    /* ── Layout ────────────────────────────── */
+    .container { max-width: 980px; margin: 0 auto; padding: 2rem 1.5rem; }
+    .page-title { font-size: 1.5rem; font-weight: 700; margin-bottom: 1.5rem; }
+
+    /* ── Alerts ────────────────────────────── */
+    .flash-messages { margin-bottom: 1rem; }
+    .alert {
+      padding: .75rem 1rem;
+      border-radius: var(--radius);
+      font-size: .9rem;
+      margin-bottom: .5rem;
+      display: flex; align-items: center; gap: .5rem;
+    }
+    .alert-success { background: rgba(34,197,94,.15); border: 1px solid rgba(34,197,94,.3); color: #86efac; }
+    .alert-danger  { background: rgba(239,68,68,.15);  border: 1px solid rgba(239,68,68,.3);  color: #fca5a5; }
+    .alert-warning { background: rgba(245,158,11,.15); border: 1px solid rgba(245,158,11,.3); color: #fde68a; }
+    .alert-info    { background: rgba(6,182,212,.15);  border: 1px solid rgba(6,182,212,.3);  color: #a5f3fc; }
+
+    /* ── Buttons ───────────────────────────── */
+    .btn {
+      display: inline-flex; align-items: center; gap: .4rem;
+      padding: .55rem 1.1rem;
+      border-radius: 8px;
+      font-size: .875rem;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      text-decoration: none;
+      transition: background .15s, opacity .15s;
+    }
+    .btn:disabled { opacity: .5; pointer-events: none; }
+    .btn-primary  { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-ghost    { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+    .btn-ghost:hover { background: #2a2e42; }
+    .btn-danger-sm {
+      background: none; border: 1px solid rgba(239,68,68,.4);
+      color: #fca5a5; padding: .3rem .7rem; font-size: .8rem;
+      border-radius: 6px; cursor: pointer; font-weight: 500;
+    }
+    .btn-danger-sm:hover { background: rgba(239,68,68,.1); }
+    .btn-sm { padding: .35rem .8rem; font-size: .8rem; }
+
+    /* ── Card ──────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem;
+    }
+
+    /* ── Badge / pill ──────────────────────── */
+    .badge {
+      display: inline-block;
+      padding: .2rem .6rem;
+      border-radius: 20px;
+      font-size: .75rem;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .badge-trademark { background: rgba(79,110,247,.2); color: #a5b4fc; }
+    .badge-design    { background: rgba(6,182,212,.2);  color: #a5f3fc; }
+    .badge-status    { background: rgba(255,255,255,.08); color: var(--text-muted); font-size: .78rem; }
+    .badge-changed   { background: rgba(245,158,11,.2); color: #fde68a; }
+
+    /* ── Spinner ───────────────────────────── */
+    .spinner {
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid rgba(255,255,255,.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Toast ─────────────────────────────── */
+    #toast-container {
+      position: fixed; bottom: 1.5rem; right: 1.5rem;
+      display: flex; flex-direction: column; gap: .5rem;
+      z-index: 9999;
+    }
+    .toast {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--accent);
+      padding: .75rem 1.1rem;
+      border-radius: var(--radius);
+      font-size: .875rem;
+      box-shadow: var(--shadow);
+      max-width: 340px;
+      animation: slideIn .25s ease;
+    }
+    .toast.success { border-left-color: var(--success); }
+    .toast.warning { border-left-color: var(--warning); }
+    .toast.error   { border-left-color: var(--danger); }
+    @keyframes slideIn { from { transform: translateX(120%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+  </style>
+  {% block extra_head %}{% endblock %}
+</head>
+<body>
+
+<nav>
+  <a class="nav-brand" href="{{ url_for('dashboard.home') if current_user.is_authenticated else url_for('auth.login') }}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+    </svg>
+    IPTrack India
+  </a>
+  <div class="nav-links">
+    {% if current_user.is_authenticated %}
+      <a href="{{ url_for('dashboard.home') }}">Dashboard</a>
+      <a href="{{ url_for('dashboard.add_filing') }}">+ Add Filing</a>
+      <span style="color:var(--text-muted);font-size:.85rem;">{{ current_user.name }}</span>
+
+      <div style="position:relative">
+        <button class="bell-btn" id="bell-btn" title="Notifications">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+          </svg>
+          <span class="bell-badge {% if unread_count is not defined or unread_count == 0 %}hidden{% endif %}" id="bell-badge">
+            {{ unread_count if unread_count is defined else '' }}
+          </span>
+        </button>
+
+        <div class="notif-dropdown" id="notif-dropdown">
+          <div class="notif-header">
+            <span>Notifications</span>
+            <span id="notif-count-label" style="color:var(--text-muted)"></span>
+          </div>
+          <div class="notif-list" id="notif-list">
+            <div class="notif-empty">Loading…</div>
+          </div>
+          <div class="notif-footer">
+            <a href="{{ url_for('dashboard.notifications') }}">View all notifications →</a>
+          </div>
+        </div>
+      </div>
+
+      <a href="{{ url_for('auth.logout') }}" style="color:var(--danger);font-size:.85rem;">Logout</a>
+    {% else %}
+      <a href="{{ url_for('auth.login') }}">Login</a>
+      <a href="{{ url_for('auth.signup') }}">Sign up</a>
+    {% endif %}
+  </div>
+</nav>
+
+<div id="toast-container"></div>
+
+<div class="container">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <div class="flash-messages">
+        {% for cat, msg in messages %}
+          <div class="alert alert-{{ cat }}">{{ msg }}</div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+
+  {% block content %}{% endblock %}
+</div>
+
+<script>
+// ── Toast helper ──────────────────────────────────────────────
+function showToast(msg, type='info', duration=4000) {
+  const c = document.getElementById('toast-container');
+  const t = document.createElement('div');
+  t.className = `toast ${type}`;
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(() => { t.style.opacity='0'; t.style.transform='translateX(120%)'; t.style.transition='.3s'; setTimeout(()=>t.remove(),350); }, duration);
+}
+
+// ── Notification bell ─────────────────────────────────────────
+const bellBtn = document.getElementById('bell-btn');
+const dropdown = document.getElementById('notif-dropdown');
+
+if (bellBtn) {
+  bellBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    dropdown.classList.toggle('open');
+    if (dropdown.classList.contains('open')) loadNotifications();
+  });
+  document.addEventListener('click', () => dropdown.classList.remove('open'));
+  dropdown.addEventListener('click', e => e.stopPropagation());
+}
+
+async function loadNotifications() {
+  try {
+    const res = await fetch('/api/notifications/recent');
+    const data = await res.json();
+    const list = document.getElementById('notif-list');
+    if (!data.notifications.length) {
+      list.innerHTML = '<div class="notif-empty">No new notifications</div>';
+      return;
+    }
+    list.innerHTML = data.notifications.map(n => `
+      <div class="notif-item">
+        ${n.message}
+        <div class="notif-time">${new Date(n.created_at).toLocaleString('en-IN')}</div>
+      </div>
+    `).join('');
+  } catch {}
+}
+
+// Poll for unread count every 60s
+async function pollUnreadCount() {
+  try {
+    const res = await fetch('/api/notifications/unread-count');
+    const data = await res.json();
+    const badge = document.getElementById('bell-badge');
+    if (badge) {
+      if (data.count > 0) {
+        badge.textContent = data.count;
+        badge.classList.remove('hidden');
+        if (parseInt(badge.dataset.prev || 0) < data.count) {
+          showToast(`🔔 ${data.count} new status update(s)!`, 'warning', 6000);
+        }
+        badge.dataset.prev = data.count;
+      } else {
+        badge.classList.add('hidden');
+      }
+    }
+  } catch {}
+}
+{% if current_user.is_authenticated %}
+pollUnreadCount();
+setInterval(pollUnreadCount, 60000);
+{% endif %}
+</script>
+{% block extra_scripts %}{% endblock %}
+</body>
+</html>

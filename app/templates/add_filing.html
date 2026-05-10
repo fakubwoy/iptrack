@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}Add Filing – IPTrack India{% endblock %}
+{% block content %}
+<style>
+  .add-wrap { max-width: 520px; margin: 2rem auto; }
+  .add-wrap h1 { font-size: 1.4rem; font-weight: 700; margin-bottom: .4rem; }
+  .add-wrap .sub { color: var(--text-muted); font-size: .875rem; margin-bottom: 1.5rem; }
+  .form-group { margin-bottom: 1.1rem; }
+  label { display: block; font-size: .85rem; font-weight: 500; color: var(--text-muted); margin-bottom: .4rem; }
+  input[type=text] {
+    width: 100%; background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 8px; padding: .65rem .9rem; color: var(--text); font-size: .95rem;
+    outline: none; transition: border-color .15s;
+  }
+  input:focus { border-color: var(--accent); }
+  .type-select { display: flex; gap: .75rem; margin-bottom: 1.1rem; }
+  .type-opt {
+    flex: 1; padding: .9rem 1rem;
+    border: 2px solid var(--border);
+    border-radius: 10px;
+    cursor: pointer;
+    text-align: center;
+    transition: all .15s;
+    user-select: none;
+  }
+  .type-opt input[type=radio] { display: none; }
+  .type-opt .t-icon { font-size: 1.5rem; margin-bottom: .3rem; }
+  .type-opt .t-label { font-size: .875rem; font-weight: 600; }
+  .type-opt .t-sub { font-size: .75rem; color: var(--text-muted); }
+  .type-opt.selected { border-color: var(--accent); background: rgba(79,110,247,.1); }
+  .hint { font-size: .78rem; color: var(--text-muted); margin-top: .3rem; }
+  .form-actions { display: flex; gap: .75rem; margin-top: 1.5rem; }
+</style>
+
+<div class="add-wrap">
+  <h1>Track a New Filing</h1>
+  <p class="sub">Enter your IP India application number to start monitoring its status.</p>
+
+  <div class="card">
+    <form method="POST" id="add-form">
+      <div class="form-group">
+        <label>Filing Type</label>
+        <div class="type-select">
+          <label class="type-opt" id="opt-trademark">
+            <input type="radio" name="filing_type" value="trademark" required>
+            <div class="t-icon">™</div>
+            <div class="t-label">Trademark</div>
+            <div class="t-sub">TM application no.</div>
+          </label>
+          <label class="type-opt" id="opt-design">
+            <input type="radio" name="filing_type" value="design">
+            <div class="t-icon">◇</div>
+            <div class="t-label">Design</div>
+            <div class="t-sub">Design reg. no.</div>
+          </label>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Application Number</label>
+        <input type="text" name="application_number" id="app-no"
+               placeholder="e.g. 5870022 or 418320-001" required autofocus>
+        <div class="hint" id="app-hint">
+          Trademark: 7-8 digit number (e.g. 5870022)
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Label <span style="font-weight:400;color:var(--text-muted)">(optional)</span></label>
+        <input type="text" name="label" placeholder="e.g. Alfaleus Class 9 – Brand name">
+        <div class="hint">A friendly name to identify this filing in your dashboard.</div>
+      </div>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary">Add & Check Status</button>
+        <a href="{{ url_for('dashboard.home') }}" class="btn btn-ghost">Cancel</a>
+      </div>
+    </form>
+  </div>
+
+  <div class="card" style="margin-top:1rem;font-size:.82rem;color:var(--text-muted);line-height:1.7">
+    <strong style="color:var(--text)">ℹ️ Where to find your number</strong><br>
+    <strong>Trademark:</strong> Check the acknowledgement receipt from IP India e-filing.
+    The number is 7-8 digits (e.g. <code style="color:var(--accent)">5870022</code>).<br>
+    <strong>Design:</strong> The registration number format is <code style="color:var(--accent)">NNNNNN-001</code>
+    (e.g. <code style="color:var(--accent)">413725-001</code>). The <code>-001</code> suffix is appended automatically if omitted.
+  </div>
+</div>
+
+{% endblock %}
+{% block extra_scripts %}
+<script>
+const opts = document.querySelectorAll('.type-opt');
+const hint = document.getElementById('app-hint');
+const appNo = document.getElementById('app-no');
+
+opts.forEach(opt => {
+  opt.addEventListener('click', () => {
+    opts.forEach(o => o.classList.remove('selected'));
+    opt.classList.add('selected');
+    const val = opt.querySelector('input').value;
+    if (val === 'trademark') {
+      hint.textContent = 'Trademark: 7-8 digit number (e.g. 5870022)';
+      appNo.placeholder = 'e.g. 5870022';
+    } else {
+      hint.textContent = 'Design: format NNNNNN-001 (the -001 suffix is added automatically if missing)';
+      appNo.placeholder = 'e.g. 418320-001 or 418320';
+    }
+  });
+});
+
+// Default select trademark
+document.getElementById('opt-trademark').classList.add('selected');
+document.getElementById('opt-trademark').querySelector('input').checked = true;
+</script>
+{% endblock %}

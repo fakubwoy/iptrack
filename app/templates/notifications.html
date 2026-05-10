@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Notifications – IPTrack India{% endblock %}
+{% block content %}
+<style>
+  .back-link { color: var(--text-muted); font-size:.875rem; text-decoration:none; display:inline-flex; align-items:center; gap:.3rem; margin-bottom:1.25rem; }
+  .back-link:hover { color: var(--text); }
+  .notif-full-item {
+    display: flex; align-items: flex-start; gap: 1rem;
+    padding: 1rem 1.2rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .notif-full-item:last-child { border-bottom: none; }
+  .notif-icon { width: 34px; height: 34px; border-radius: 8px; background: rgba(245,158,11,.15); display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size: 1rem; }
+  .notif-body { flex: 1; }
+  .notif-msg  { font-size: .9rem; line-height: 1.45; }
+  .notif-time { font-size: .78rem; color: var(--text-muted); margin-top: .3rem; }
+  .empty-notif { text-align:center; padding:3rem; color:var(--text-muted); font-size:.875rem; }
+</style>
+
+<a href="{{ url_for('dashboard.home') }}" class="back-link">← Back to Dashboard</a>
+<h1 class="page-title">All Notifications</h1>
+
+<div class="card" style="padding:0">
+  {% if notifications %}
+    {% for n in notifications %}
+    <div class="notif-full-item">
+      <div class="notif-icon">🔔</div>
+      <div class="notif-body">
+        <div class="notif-msg">{{ n.message }}</div>
+        <div class="notif-time">{{ n.created_at.strftime('%d %b %Y, %I:%M %p') }} UTC</div>
+      </div>
+      <a href="{{ url_for('dashboard.filing_history', filing_id=n.filing_id) }}"
+         style="font-size:.78rem;color:var(--accent);text-decoration:none;white-space:nowrap;">View →</a>
+    </div>
+    {% endfor %}
+  {% else %}
+    <div class="empty-notif">No notifications yet. Status changes will appear here.</div>
+  {% endif %}
+</div>
+{% endblock %}

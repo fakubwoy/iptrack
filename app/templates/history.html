@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}History – {{ filing.application_number }}{% endblock %}
+{% block content %}
+<style>
+  .back-link { color: var(--text-muted); font-size: .875rem; text-decoration: none; display: inline-flex; align-items: center; gap: .3rem; margin-bottom: 1.25rem; }
+  .back-link:hover { color: var(--text); }
+  .history-header { margin-bottom: 1.5rem; }
+  .history-header h1 { font-size: 1.3rem; font-weight: 700; }
+  .history-header .meta { font-size: .875rem; color: var(--text-muted); margin-top: .3rem; }
+  .history-table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+  .history-table th { text-align: left; padding: .6rem 1rem; color: var(--text-muted); font-weight: 600; border-bottom: 1px solid var(--border); }
+  .history-table td { padding: .7rem 1rem; border-bottom: 1px solid var(--border); }
+  .history-table tr:last-child td { border-bottom: none; }
+  .changed-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--warning); margin-right: .4rem; }
+  .empty-hist { text-align: center; padding: 2rem; color: var(--text-muted); font-size: .875rem; }
+</style>
+
+<a href="{{ url_for('dashboard.home') }}" class="back-link">← Back to Dashboard</a>
+
+<div class="history-header">
+  <h1>
+    {{ filing.application_number }}
+    {% if filing.label %}<span style="font-weight:400;color:var(--text-muted)"> – {{ filing.label }}</span>{% endif %}
+  </h1>
+  <div class="meta">
+    <span class="badge badge-{{ filing.filing_type }}">{{ filing.filing_type.title() }}</span>
+    &nbsp; Current status: <strong>{{ filing.last_status or 'Unknown' }}</strong>
+  </div>
+</div>
+
+<div class="card">
+  {% if history %}
+  <table class="history-table">
+    <thead>
+      <tr>
+        <th>Date &amp; Time (IST)</th>
+        <th>Status</th>
+        <th>Changed?</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for h in history %}
+      <tr>
+        <td style="white-space:nowrap;color:var(--text-muted)">
+          {{ h.checked_at.strftime('%d %b %Y, %I:%M %p') }}
+        </td>
+        <td>{{ h.status }}</td>
+        <td>
+          {% if h.changed %}
+            <span class="changed-dot"></span> Yes
+          {% else %}
+            <span style="color:var(--text-muted)">—</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-hist">No history yet. Click "Check Now" on the dashboard to run the first check.</div>
+  {% endif %}
+</div>
+{% endblock %}

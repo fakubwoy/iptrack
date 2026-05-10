@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Sign Up – IPTrack India{% endblock %}
+{% block content %}
+<style>
+  .auth-wrap { max-width: 420px; margin: 3rem auto; }
+  .auth-wrap h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: .4rem; }
+  .auth-wrap p.sub { color: var(--text-muted); font-size: .9rem; margin-bottom: 1.75rem; }
+  .form-group { margin-bottom: 1rem; }
+  label { display: block; font-size: .85rem; font-weight: 500; color: var(--text-muted); margin-bottom: .4rem; }
+  input[type=email], input[type=password], input[type=text] {
+    width: 100%; background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 8px; padding: .65rem .9rem; color: var(--text); font-size: .95rem;
+    outline: none; transition: border-color .15s;
+  }
+  input:focus { border-color: var(--accent); }
+  .bottom-link { margin-top: 1rem; text-align: center; font-size: .875rem; color: var(--text-muted); }
+  .bottom-link a { color: var(--accent); text-decoration: none; }
+</style>
+<div class="auth-wrap">
+  <h1>Create account</h1>
+  <p class="sub">Get notified when your trademark or design status changes.</p>
+  <div class="card">
+    <form method="POST">
+      <div class="form-group">
+        <label>Full name</label>
+        <input type="text" name="name" placeholder="Arun Kumar" required autofocus>
+      </div>
+      <div class="form-group">
+        <label>Email address</label>
+        <input type="email" name="email" placeholder="you@example.com" required>
+      </div>
+      <div class="form-group">
+        <label>Password</label>
+        <input type="password" name="password" placeholder="Min. 8 characters" required minlength="8">
+      </div>
+      <div class="form-group">
+        <label>Confirm password</label>
+        <input type="password" name="password2" placeholder="••••••••" required>
+      </div>
+      <button class="btn btn-primary" style="width:100%;margin-top:.5rem;" type="submit">Create account</button>
+    </form>
+  </div>
+  <p class="bottom-link">Already have an account? <a href="{{ url_for('auth.login') }}">Log in</a></p>
+</div>
+{% endblock %}
