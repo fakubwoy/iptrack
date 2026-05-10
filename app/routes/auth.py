@@ -81,63 +81,73 @@ def debug_tm_portal():
     """TEMPORARY – remove after debugging."""
     import requests as _req
     from bs4 import BeautifulSoup
-    import urllib3
+    import urllib3, re
     urllib3.disable_warnings()
 
     HEADERS = {
         "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
         "Accept-Language": "en-IN,en;q=0.9",
-        "Referer": "https://tmrsearch.ipindia.gov.in/",
+        "Referer": "https://tmrsearch.ipindia.gov.in/estatus/",
     }
+    BASE = "https://tmrsearch.ipindia.gov.in/estatus"
     results = {}
 
-    # The old eregister URL is a dead shell. The new URL is /estatus.
-    # Probe it and all its likely sub-pages.
-    BASE = "https://tmrsearch.ipindia.gov.in/estatus/"
+    # Step 1: get the homepage and extract all JS/CSS bundle URLs
+    r = _req.get(BASE + "/", headers=HEADERS, verify=False, timeout=20)
+    soup = BeautifulSoup(r.text, "lxml")
 
-    for path in ["", "index.aspx", "default.aspx", "home.aspx",
-                 "TM_Status.aspx", "Status.aspx", "Search.aspx",
-                 "TMStatus.aspx", "AppStatus.aspx", "frmmain.aspx"]:
-        url = BASE + path
+    script_srcs = [s.get("src","") for s in soup.find_all("script") if s.get("src")]
+    results["script_srcs"] = script_srcs
+
+    # Step 2: fetch each JS file and grep for API-looking paths
+    api_patterns = re.compile(r'["\`\'](/(?:api|estatus)[^\s"\'`<>]{2,80})["\`\']', re.I)
+    fetch_patterns = re.compile(r'fetch\(["\`\'](/[^\s"\'`<>]{5,100})["\`\']', re.I)
+
+    for src in script_srcs[:10]:
+        if not src.startswith("http"):
+            src = "https://tmrsearch.ipindia.gov.in" + src
         try:
-            r = _req.get(url, headers=HEADERS, verify=False, timeout=15, allow_redirects=True)
-            soup = BeautifulSoup(r.text, "lxml")
-            t = soup.find("title")
-            non_hidden_inputs = [
-                {k: v for k, v in i.attrs.items() if k in ("id","name","type","value")}
-                for i in soup.find_all("input")
-                if i.get("type","text") not in ("hidden",)
-            ]
-            results[f"probe_{path or 'root'}"] = {
-                "status": r.status_code,
-                "final_url": r.url,
-                "title": t.get_text(strip=True) if t else "",
-                "visible_inputs": non_hidden_inputs,
-                "all_inputs": [{k:v for k,v in i.attrs.items() if k in ("id","name","type")} for i in soup.find_all("input")],
-                "forms": [{"action": f.get("action",""), "method": f.get("method","")} for f in soup.find_all("form")],
-                "frames": [fr.get("src","") for fr in soup.find_all(["frame","iframe"])],
-                "raw": r.text[:2000],
+            rj = _req.get(src, headers=HEADERS, verify=False, timeout=15)
+            found_apis = list(set(api_patterns.findall(rj.text) + fetch_patterns.findall(rj.text)))
+            results[f"js_{src.split('/')[-1][:40]}"] = {
+                "status": rj.status_code,
+                "size": len(rj.text),
+                "api_paths": found_apis[:40],
+                "snippet": rj.text[:500],
             }
         except Exception as e:
-            results[f"probe_{path or 'root'}"] = {"error": str(e)}
+            results[f"js_{src}"] = {"error": str(e)}
 
-    # Also try POSTing the TM number directly to the most likely endpoint
-    # to see if it works without needing VIEWSTATE
-    for url in [
-        "https://tmrsearch.ipindia.gov.in/estatus/",
-        "https://tmrsearch.ipindia.gov.in/estatus/TM_Status.aspx",
-    ]:
+    # Step 3: try common ASP.NET Core API conventions directly
+    tm_no = "5870022"
+    api_attempts = [
+        ("GET",  f"{BASE}/api/trademark/{tm_no}",         {}),
+        ("GET",  f"{BASE}/api/TradeMark/{tm_no}",         {}),
+        ("GET",  f"{BASE}/api/status/{tm_no}",            {}),
+        ("GET",  f"{BASE}/api/eregister/{tm_no}",         {}),
+        ("POST", f"{BASE}/api/trademark/status",          {"applicationNumber": tm_no}),
+        ("POST", f"{BASE}/api/TradeMark/GetStatus",       {"tmNo": tm_no}),
+        ("GET",  f"{BASE}/TradeMarkStatus/GetStatus?tmNo={tm_no}", {}),
+        ("GET",  f"{BASE}/Home/GetTMStatus?tmno={tm_no}", {}),
+        ("POST", f"{BASE}/Home/GetTMStatus",              {"tmno": tm_no}),
+        ("GET",  f"https://tmrsearch.ipindia.gov.in/api/trademark/{tm_no}", {}),
+    ]
+    for method, url, body in api_attempts:
         try:
-            r2 = _req.post(url, data={"tmno": "5870022", "ApplicationNumber": "5870022"},
-                           headers=HEADERS, verify=False, timeout=15)
-            soup2 = BeautifulSoup(r2.text, "lxml")
-            t2 = soup2.find("title")
-            results[f"post_attempt_{url.split('/')[-1] or 'root'}"] = {
+            if method == "GET":
+                r2 = _req.get(url, headers={**HEADERS, "Accept": "application/json"},
+                              verify=False, timeout=10)
+            else:
+                r2 = _req.post(url, json=body,
+                               headers={**HEADERS, "Accept": "application/json",
+                                        "Content-Type": "application/json"},
+                               verify=False, timeout=10)
+            results[f"{method}_{url.split(BASE)[-1][:50]}"] = {
                 "status": r2.status_code,
-                "title": t2.get_text(strip=True) if t2 else "",
-                "raw": r2.text[:2000],
+                "content_type": r2.headers.get("Content-Type",""),
+                "body": r2.text[:500],
             }
         except Exception as e:
-            results[f"post_attempt_{url}"] = {"error": str(e)}
+            results[f"{method}_{url}"] = {"error": str(e)}
 
     return jsonify(results)
