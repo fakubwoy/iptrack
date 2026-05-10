@@ -14,7 +14,7 @@ def health():
 @auth_bp.route("/debug-tm-portal")
 def debug_tm_portal():
     """TEMPORARY – remove after debugging. Visit /debug-tm-portal in browser."""
-    import requests as req
+    import requests as _req
     from bs4 import BeautifulSoup
     import urllib3
     urllib3.disable_warnings()
@@ -24,30 +24,63 @@ def debug_tm_portal():
         "Accept-Language": "en-IN,en;q=0.9",
         "Referer": "https://tmrsearch.ipindia.gov.in/eregister/eregister.aspx",
     }
-
+    BASE = "https://tmrsearch.ipindia.gov.in/eregister/"
     results = {}
-    for path in ["options.aspx", "ereg_top.aspx", "eregister.aspx"]:
-        url = f"https://tmrsearch.ipindia.gov.in/eregister/{path}"
+
+    # Step 1: GET options.aspx and collect all hidden inputs + any JS that mentions URLs
+    r = _req.get(BASE + "options.aspx", headers=HEADERS, verify=False, timeout=20)
+    soup = BeautifulSoup(r.text, "lxml")
+    vs  = (soup.find("input", {"id": "__VIEWSTATE"}) or {}).get("value", "")
+    vsg = (soup.find("input", {"id": "__VIEWSTATEGENERATOR"}) or {}).get("value", "")
+    vse = (soup.find("input", {"id": "__VIEWSTATEENCRYPTED"}) or {}).get("value", "")
+    results["options_get"] = {
+        "status": r.status_code,
+        "inputs": [{k:v for k,v in i.attrs.items()} for i in soup.find_all("input")],
+        "links": [a.get("href","") for a in soup.find_all("a")],
+        "scripts_snippet": r.text[r.text.find("<script"):r.text.find("<script")+2000] if "<script" in r.text else "",
+        "full_raw": r.text,
+    }
+
+    # Step 2: POST to options.aspx with each button (there may be image/submit buttons)
+    all_btns = soup.find_all("input", {"type": ["submit","image","button"]})
+    all_btns += soup.find_all("button")
+    if not all_btns:
+        # No buttons found — try posting with a dummy btn name used historically
+        all_btns = [{"name": "ctl00$ContentPlaceHolder1$Button_TMStatus", "value": "Trade Mark Status"}]
+
+    for i, btn in enumerate(all_btns):
+        name  = btn.get("name","") if hasattr(btn,"get") else btn.get("name","")
+        value = btn.get("value","") if hasattr(btn,"get") else ""
+        payload = {"__VIEWSTATE": vs, "__VIEWSTATEGENERATOR": vsg, "__VIEWSTATEENCRYPTED": vse}
+        if name:
+            payload[name] = value
         try:
-            r = req.get(url, headers=HEADERS, verify=False, timeout=20)
-            soup = BeautifulSoup(r.text, "lxml")
-            results[path] = {
-                "status_code": r.status_code,
-                "final_url": r.url,
-                "title": (soup.find("title") or {}).get_text(strip=True),
-                "inputs": [
-                    {k: v for k, v in inp.attrs.items() if k in ("id","name","type","value")}
-                    for inp in soup.find_all("input")
-                ],
-                "forms": [
-                    {"action": f.get("action",""), "method": f.get("method","")}
-                    for f in soup.find_all("form")
-                ],
-                "iframes": [fr.get("src","") for fr in soup.find_all(["iframe","frame"])],
-                "raw_html": r.text[:3000],
+            r2 = _req.post(BASE + "options.aspx", data=payload, headers=HEADERS, verify=False, timeout=20)
+            soup2 = BeautifulSoup(r2.text, "lxml")
+            results[f"post_btn_{i}_{name}"] = {
+                "status": r2.status_code, "final_url": r2.url,
+                "title": (soup2.find("title") or {}).get_text(strip=True),
+                "inputs": [{k:v for k,v in inp.attrs.items() if k in ("id","name","type")} for inp in soup2.find_all("input")],
+                "raw": r2.text[:3000],
             }
         except Exception as e:
-            results[path] = {"error": str(e)}
+            results[f"post_btn_{i}_{name}"] = {"error": str(e)}
+
+    # Step 3: probe likely child pages directly
+    for path in ["Application_View.aspx", "TM_View.aspx", "ereg_view.aspx",
+                 "showstatus.aspx", "TradeMarkApp_View.aspx", "eregister_search.aspx",
+                 "TM_Status.aspx", "StatusView.aspx"]:
+        try:
+            r3 = _req.get(BASE + path, headers=HEADERS, verify=False, timeout=10)
+            soup3 = BeautifulSoup(r3.text, "lxml")
+            results[f"probe_{path}"] = {
+                "status": r3.status_code,
+                "title": (soup3.find("title") or {}).get_text(strip=True),
+                "inputs": [{k:v for k,v in i.attrs.items() if k in ("id","name","type")} for i in soup3.find_all("input")],
+                "raw": r3.text[:1500],
+            }
+        except Exception as e:
+            results[f"probe_{path}"] = {"error": str(e)}
 
     return jsonify(results)
 
