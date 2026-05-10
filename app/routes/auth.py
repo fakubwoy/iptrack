@@ -11,6 +11,47 @@ def health():
     return jsonify({"status": "ok"}), 200
 
 
+@auth_bp.route("/debug-tm-portal")
+def debug_tm_portal():
+    """TEMPORARY – remove after debugging. Visit /debug-tm-portal in browser."""
+    import requests as req
+    from bs4 import BeautifulSoup
+    import urllib3
+    urllib3.disable_warnings()
+
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept-Language": "en-IN,en;q=0.9",
+        "Referer": "https://tmrsearch.ipindia.gov.in/eregister/eregister.aspx",
+    }
+
+    results = {}
+    for path in ["options.aspx", "ereg_top.aspx", "eregister.aspx"]:
+        url = f"https://tmrsearch.ipindia.gov.in/eregister/{path}"
+        try:
+            r = req.get(url, headers=HEADERS, verify=False, timeout=20)
+            soup = BeautifulSoup(r.text, "lxml")
+            results[path] = {
+                "status_code": r.status_code,
+                "final_url": r.url,
+                "title": (soup.find("title") or {}).get_text(strip=True),
+                "inputs": [
+                    {k: v for k, v in inp.attrs.items() if k in ("id","name","type","value")}
+                    for inp in soup.find_all("input")
+                ],
+                "forms": [
+                    {"action": f.get("action",""), "method": f.get("method","")}
+                    for f in soup.find_all("form")
+                ],
+                "iframes": [fr.get("src","") for fr in soup.find_all(["iframe","frame"])],
+                "raw_html": r.text[:3000],
+            }
+        except Exception as e:
+            results[path] = {"error": str(e)}
+
+    return jsonify(results)
+
+
 @auth_bp.route("/")
 def index():
     if current_user.is_authenticated:
