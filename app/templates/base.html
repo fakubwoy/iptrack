@@ -339,20 +339,25 @@ async function pollUnreadCount() {
     const data = await res.json();
     const badge = document.getElementById('bell-badge');
     if (badge) {
+      const prev = parseInt(badge.dataset.prev || '0', 10);
       if (data.count > 0) {
         badge.textContent = data.count;
         badge.classList.remove('hidden');
-        if (parseInt(badge.dataset.prev || 0) < data.count) {
-          showToast(`🔔 ${data.count} new status update(s)!`, 'warning', 6000);
+        if (data.count > prev) {
+          showToast(`🔔 ${data.count - prev} new status update(s)!`, 'warning', 6000);
         }
-        badge.dataset.prev = data.count;
       } else {
         badge.classList.add('hidden');
       }
+      badge.dataset.prev = data.count;
     }
   } catch {}
 }
 {% if current_user.is_authenticated %}
+const _badge = document.getElementById('bell-badge');
+if (_badge) {
+  _badge.dataset.prev = '{{ unread_count if unread_count is defined else 0 }}';
+}
 pollUnreadCount();
 setInterval(pollUnreadCount, 60000);
 {% endif %}

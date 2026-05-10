@@ -1,9 +1,14 @@
-from flask import Blueprint, render_template, redirect, url_for, flash, request, abort
+from flask import Blueprint, render_template, redirect, url_for, flash, request, abort, current_app
 from flask_login import login_required, current_user
 from app import db
 from app.models import Filing, Notification, StatusHistory
 
 dashboard_bp = Blueprint("dashboard", __name__)
+
+
+def _unread_count():
+    """Helper: unread notification count for the current user (used by base.html)."""
+    return Notification.query.filter_by(user_id=current_user.id, is_read=False).count()
 
 
 @dashboard_bp.route("/dashboard")
@@ -14,12 +19,13 @@ def home():
         .order_by(Filing.created_at.desc())
         .all()
     )
-    unread_count = (
-        Notification.query
-        .filter_by(user_id=current_user.id, is_read=False)
-        .count()
+    unread = _unread_count()
+    return render_template(
+        "dashboard.html",
+        filings=filings,
+        unread_count=unread,
+        check_interval_hours=current_app.config.get("CHECK_INTERVAL_HOURS", 12),
     )
-    return render_template("dashboard.html", filings=filings, unread_count=unread_count)
 
 
 @dashboard_bp.route("/filings/add", methods=["GET", "POST"])
@@ -53,12 +59,13 @@ def add_filing():
             )
             db.session.add(filing)
             db.session.commit()
-            flash("Filing added! Checking status now…", "success")
-            # Immediate async-style check via inline call
-            _trigger_immediate_check(filing)
+            flash("Filing added! Status will be checked shortly.", "success")
+            # Fire-and-forget in a background thread so the response returns immediately.
+            # The scraper can take up to 30–60 s (Playwright); we must not block here.
+            _trigger_immediate_check_async(filing.id)
             return redirect(url_for("dashboard.home"))
 
-    return render_template("add_filing.html")
+    return render_template("add_filing.html", unread_count=_unread_count())
 
 
 @dashboard_bp.route("/filings/<int:filing_id>/delete", methods=["POST"])
@@ -85,7 +92,7 @@ def filing_history(filing_id):
         .limit(50)
         .all()
     )
-    return render_template("history.html", filing=filing, history=history)
+    return render_template("history.html", filing=filing, history=history, unread_count=_unread_count())
 
 
 @dashboard_bp.route("/notifications")
@@ -101,15 +108,34 @@ def notifications():
     # Mark all as read
     Notification.query.filter_by(user_id=current_user.id, is_read=False).update({"is_read": True})
     db.session.commit()
-    return render_template("notifications.html", notifications=notifs)
+    return render_template("notifications.html", notifications=notifs, unread_count=0)
 
 
-def _trigger_immediate_check(filing):
-    """Run a status check synchronously right after adding a filing."""
-    from app.tasks import _check_and_record
-    from app import db as _db
-    try:
-        _check_and_record(filing, _db)
-    except Exception as exc:
-        import logging
-        logging.getLogger(__name__).warning(f"Immediate check failed: {exc}")
+def _trigger_immediate_check_async(filing_id: int):
+    """
+    Run a status check in a daemon thread so the web response isn't blocked.
+    Uses the current app's context via current_app._get_current_object().
+    """
+    import threading
+    import logging
+    from flask import current_app
+
+    app = current_app._get_current_object()
+
+    def _run():
+        with app.app_context():
+            from app import db as _db
+            from app.models import Filing as _Filing
+            from app.tasks import _check_and_record
+            filing = _Filing.query.get(filing_id)
+            if filing is None:
+                return
+            try:
+                _check_and_record(filing, _db)
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    f"Immediate check failed for filing {filing_id}: {exc}"
+                )
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
