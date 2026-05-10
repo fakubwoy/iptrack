@@ -92,64 +92,83 @@ def debug_tm_portal():
     BASE = "https://tmrsearch.ipindia.gov.in/eregister/"
     results = {}
 
-    # GET options.aspx
-    r = _req.get(BASE + "options.aspx", headers=HEADERS, verify=False, timeout=20)
-    soup = BeautifulSoup(r.text, "lxml")
-    vs  = (soup.find("input", {"id": "__VIEWSTATE"}) or {}).get("value", "")
-    vsg = (soup.find("input", {"id": "__VIEWSTATEGENERATOR"}) or {}).get("value", "")
-    vse = (soup.find("input", {"id": "__VIEWSTATEENCRYPTED"}) or {}).get("value", "")
-
-    # Extract all .aspx references and __doPostBack targets from source
-    aspx_refs = re.findall(r'["\']([^"\']*\.aspx[^"\']*)["\']', r.text, re.I)
-    dopostback = re.findall(r"__doPostBack\('([^']+)'", r.text)
-    all_hrefs = [a.get("href", "") for a in soup.find_all("a")]
-    results["options_analysis"] = {
-        "status": r.status_code,
-        "aspx_refs": aspx_refs,
-        "dopostback_targets": dopostback,
-        "hrefs": all_hrefs,
-        "full_raw": r.text,
-    }
-
-    # Try __doPostBack for each target found
-    for target in dopostback:
-        payload = {
-            "__VIEWSTATE": vs, "__VIEWSTATEGENERATOR": vsg,
-            "__VIEWSTATEENCRYPTED": vse,
-            "__EVENTTARGET": target, "__EVENTARGUMENT": "",
-        }
+    # 1. Fetch the CSS file — it may reference the target page URLs
+    for asset in ["Css/ereg.css", "Css/style.css", "Css/main.css"]:
         try:
-            r2 = _req.post(BASE + "options.aspx", data=payload, headers=HEADERS, verify=False, timeout=20)
-            soup2 = BeautifulSoup(r2.text, "lxml")
-            t = soup2.find("title")
-            results[f"postback_{target}"] = {
-                "status": r2.status_code, "final_url": r2.url,
-                "title": t.get_text(strip=True) if t else "",
-                "inputs": [{k:v for k,v in i.attrs.items() if k in ("id","name","type")} for i in soup2.find_all("input")],
-                "raw": r2.text[:2000],
-            }
+            r = _req.get(BASE + asset, headers=HEADERS, verify=False, timeout=10)
+            results[f"css_{asset}"] = {"status": r.status_code, "body": r.text[:3000]}
         except Exception as e:
-            results[f"postback_{target}"] = {"error": str(e)}
+            results[f"css_{asset}"] = {"error": str(e)}
 
-    # Probe candidate URLs directly
-    for path in [
-        "Application_View.aspx", "TM_View.aspx", "ereg_view.aspx",
-        "showstatus.aspx", "TM_Status.aspx", "TMStatus.aspx",
-        "TradeMarkStatus.aspx", "AppStatus.aspx", "ViewStatus.aspx",
-        "TM_AppStatus.aspx", "eregister_status.aspx", "status.aspx",
-        "TradeMarkApp_View.aspx", "eregister_search.aspx", "StatusView.aspx",
-    ]:
-        try:
-            r3 = _req.get(BASE + path, headers=HEADERS, verify=False, timeout=10)
-            soup3 = BeautifulSoup(r3.text, "lxml")
-            t = soup3.find("title")
-            results[f"probe_{path}"] = {
-                "status": r3.status_code,
-                "title": t.get_text(strip=True) if t else "",
-                "inputs": [{k:v for k,v in i.attrs.items() if k in ("id","name","type")} for i in soup3.find_all("input")],
-                "raw": r3.text[:800],
-            }
-        except Exception as e:
-            results[f"probe_{path}"] = {"error": str(e)}
+    # 2. Use Playwright to actually load the page, click the first visible
+    #    button-like element, and capture what URL loads in showframe
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox","--disable-setuid-sandbox",
+                      "--disable-dev-shm-usage","--ignore-certificate-errors"]
+            )
+            context = browser.new_context(ignore_https_errors=True)
+
+            # Intercept all requests to find what URLs get fetched
+            all_requests = []
+            context.on("request", lambda req: all_requests.append({
+                "url": req.url, "method": req.method,
+                "post_data": req.post_data if req.method == "POST" else None,
+            }))
+
+            page = context.new_page()
+            page.goto(BASE + "eregister.aspx", wait_until="domcontentloaded", timeout=30000)
+
+            # Give frames time to load
+            page.wait_for_timeout(3000)
+
+            # Get all frame URLs
+            frame_urls = [f.url for f in page.frames]
+            results["playwright_frames"] = frame_urls
+
+            # Try to access the options frame and click anything in it
+            options_frame = None
+            for frame in page.frames:
+                if "options" in frame.url:
+                    options_frame = frame
+                    break
+
+            if options_frame:
+                frame_html = options_frame.content()
+                results["options_frame_html"] = frame_html
+                # Find all clickable elements
+                clickables = options_frame.evaluate("""() =>
+                    Array.from(document.querySelectorAll('a, input[type=submit], button')).map(el => ({
+                        tag: el.tagName, href: el.href || '', id: el.id,
+                        text: el.textContent.trim().slice(0,50),
+                        onclick: el.getAttribute('onclick') || ''
+                    }))
+                """)
+                results["options_frame_clickables"] = clickables
+
+                # Click the first link and see what happens
+                links = options_frame.query_selector_all("a")
+                if links:
+                    links[0].click()
+                    page.wait_for_timeout(2000)
+                    # Check showframe content
+                    for frame in page.frames:
+                        if "options" not in frame.url and "ereg_top" not in frame.url and frame.url != BASE + "eregister.aspx":
+                            results["showframe_after_click"] = {
+                                "url": frame.url,
+                                "html": frame.content()[:3000],
+                            }
+            else:
+                results["options_frame"] = "not found"
+                results["all_frame_urls"] = frame_urls
+
+            results["all_network_requests"] = all_requests[:50]
+            browser.close()
+
+    except Exception as e:
+        results["playwright_error"] = str(e)
 
     return jsonify(results)
