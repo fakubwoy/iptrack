@@ -81,94 +81,63 @@ def debug_tm_portal():
     """TEMPORARY – remove after debugging."""
     import requests as _req
     from bs4 import BeautifulSoup
-    import urllib3, re
+    import urllib3
     urllib3.disable_warnings()
 
     HEADERS = {
         "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
         "Accept-Language": "en-IN,en;q=0.9",
-        "Referer": "https://tmrsearch.ipindia.gov.in/eregister/eregister.aspx",
+        "Referer": "https://tmrsearch.ipindia.gov.in/",
     }
-    BASE = "https://tmrsearch.ipindia.gov.in/eregister/"
     results = {}
 
-    # 1. Fetch the CSS file — it may reference the target page URLs
-    for asset in ["Css/ereg.css", "Css/style.css", "Css/main.css"]:
+    # The old eregister URL is a dead shell. The new URL is /estatus.
+    # Probe it and all its likely sub-pages.
+    BASE = "https://tmrsearch.ipindia.gov.in/estatus/"
+
+    for path in ["", "index.aspx", "default.aspx", "home.aspx",
+                 "TM_Status.aspx", "Status.aspx", "Search.aspx",
+                 "TMStatus.aspx", "AppStatus.aspx", "frmmain.aspx"]:
+        url = BASE + path
         try:
-            r = _req.get(BASE + asset, headers=HEADERS, verify=False, timeout=10)
-            results[f"css_{asset}"] = {"status": r.status_code, "body": r.text[:3000]}
+            r = _req.get(url, headers=HEADERS, verify=False, timeout=15, allow_redirects=True)
+            soup = BeautifulSoup(r.text, "lxml")
+            t = soup.find("title")
+            non_hidden_inputs = [
+                {k: v for k, v in i.attrs.items() if k in ("id","name","type","value")}
+                for i in soup.find_all("input")
+                if i.get("type","text") not in ("hidden",)
+            ]
+            results[f"probe_{path or 'root'}"] = {
+                "status": r.status_code,
+                "final_url": r.url,
+                "title": t.get_text(strip=True) if t else "",
+                "visible_inputs": non_hidden_inputs,
+                "all_inputs": [{k:v for k,v in i.attrs.items() if k in ("id","name","type")} for i in soup.find_all("input")],
+                "forms": [{"action": f.get("action",""), "method": f.get("method","")} for f in soup.find_all("form")],
+                "frames": [fr.get("src","") for fr in soup.find_all(["frame","iframe"])],
+                "raw": r.text[:2000],
+            }
         except Exception as e:
-            results[f"css_{asset}"] = {"error": str(e)}
+            results[f"probe_{path or 'root'}"] = {"error": str(e)}
 
-    # 2. Use Playwright to actually load the page, click the first visible
-    #    button-like element, and capture what URL loads in showframe
-    try:
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox","--disable-setuid-sandbox",
-                      "--disable-dev-shm-usage","--ignore-certificate-errors"]
-            )
-            context = browser.new_context(ignore_https_errors=True)
-
-            # Intercept all requests to find what URLs get fetched
-            all_requests = []
-            context.on("request", lambda req: all_requests.append({
-                "url": req.url, "method": req.method,
-                "post_data": req.post_data if req.method == "POST" else None,
-            }))
-
-            page = context.new_page()
-            page.goto(BASE + "eregister.aspx", wait_until="domcontentloaded", timeout=30000)
-
-            # Give frames time to load
-            page.wait_for_timeout(3000)
-
-            # Get all frame URLs
-            frame_urls = [f.url for f in page.frames]
-            results["playwright_frames"] = frame_urls
-
-            # Try to access the options frame and click anything in it
-            options_frame = None
-            for frame in page.frames:
-                if "options" in frame.url:
-                    options_frame = frame
-                    break
-
-            if options_frame:
-                frame_html = options_frame.content()
-                results["options_frame_html"] = frame_html
-                # Find all clickable elements
-                clickables = options_frame.evaluate("""() =>
-                    Array.from(document.querySelectorAll('a, input[type=submit], button')).map(el => ({
-                        tag: el.tagName, href: el.href || '', id: el.id,
-                        text: el.textContent.trim().slice(0,50),
-                        onclick: el.getAttribute('onclick') || ''
-                    }))
-                """)
-                results["options_frame_clickables"] = clickables
-
-                # Click the first link and see what happens
-                links = options_frame.query_selector_all("a")
-                if links:
-                    links[0].click()
-                    page.wait_for_timeout(2000)
-                    # Check showframe content
-                    for frame in page.frames:
-                        if "options" not in frame.url and "ereg_top" not in frame.url and frame.url != BASE + "eregister.aspx":
-                            results["showframe_after_click"] = {
-                                "url": frame.url,
-                                "html": frame.content()[:3000],
-                            }
-            else:
-                results["options_frame"] = "not found"
-                results["all_frame_urls"] = frame_urls
-
-            results["all_network_requests"] = all_requests[:50]
-            browser.close()
-
-    except Exception as e:
-        results["playwright_error"] = str(e)
+    # Also try POSTing the TM number directly to the most likely endpoint
+    # to see if it works without needing VIEWSTATE
+    for url in [
+        "https://tmrsearch.ipindia.gov.in/estatus/",
+        "https://tmrsearch.ipindia.gov.in/estatus/TM_Status.aspx",
+    ]:
+        try:
+            r2 = _req.post(url, data={"tmno": "5870022", "ApplicationNumber": "5870022"},
+                           headers=HEADERS, verify=False, timeout=15)
+            soup2 = BeautifulSoup(r2.text, "lxml")
+            t2 = soup2.find("title")
+            results[f"post_attempt_{url.split('/')[-1] or 'root'}"] = {
+                "status": r2.status_code,
+                "title": t2.get_text(strip=True) if t2 else "",
+                "raw": r2.text[:2000],
+            }
+        except Exception as e:
+            results[f"post_attempt_{url}"] = {"error": str(e)}
 
     return jsonify(results)
