@@ -5,10 +5,11 @@ Strategy (open-source first):
   1. requests + BeautifulSoup  (no external dependency, free)
   2. Playwright headless Chromium fallback (installed at build time on Railway)
   3. Optional anticaptcha.com solver for the TM CAPTCHA
+
+DEBUG: set env var SCRAPER_DEBUG=1 to dump raw HTML to logs.
 """
 
 import logging
-import json
 import re
 import os
 import requests
@@ -17,11 +18,11 @@ from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
+DEBUG = os.environ.get("SCRAPER_DEBUG", "0") == "1"
 
-# Retry-capable session with SSL verification disabled for IP India portals
-# (their certs are frequently misconfigured / use outdated chains)
+# ── Shared session ────────────────────────────────────────────────────────────
 _session = requests.Session()
-_session.verify = False  # IP India portals have SSL issues
+_session.verify = False  # IP India portals have frequent SSL chain issues
 _session.headers.update({
     "User-Agent": (
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -29,12 +30,12 @@ _session.headers.update({
     ),
     "Accept-Language": "en-IN,en;q=0.9",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer": "https://ipindia.gov.in/",
 })
 _retry = Retry(total=2, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
 _session.mount("https://", HTTPAdapter(max_retries=_retry))
 _session.mount("http://",  HTTPAdapter(max_retries=_retry))
 
-# Suppress the InsecureRequestWarning that comes with verify=False
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -42,46 +43,104 @@ TM_STATUS_URL     = "https://tmrsearch.ipindia.gov.in/eregister/eregister.aspx"
 DESIGN_STATUS_URL = "https://search.ipindia.gov.in/DesignApplicationStatus/"
 
 
-# ── Design (no CAPTCHA) ──────────────────────────────────────────────────────
+# ── Diagnostics ───────────────────────────────────────────────────────────────
 
-def _scrape_design_requests(app_no: str) -> dict:
+def _diagnose_html(label, html, status_code, final_url):
+    soup = BeautifulSoup(html, "lxml")
+    inputs = [
+        {k: v for k, v in inp.attrs.items() if k in ("id", "name", "type")}
+        for inp in soup.find_all("input")
+    ]
+    iframes = [fr.get("src", "") for fr in soup.find_all(["iframe", "frame"])]
+    title = soup.find("title")
+    title_text = title.get_text(strip=True) if title else ""
+    logger.info(
+        f"[DIAG {label}] HTTP {status_code} | URL: {final_url} | "
+        f"title: {title_text!r} | inputs: {inputs} | iframes: {iframes}"
+    )
+    if DEBUG:
+        logger.debug(f"[DIAG {label}] RAW HTML:\n{html[:5000]}")
+
+
+def _detect_block(html, status_code):
+    low = html.lower()
+    if status_code == 403:
+        return "Portal blocked this server (HTTP 403) – check manually at ipindia.gov.in"
+    if status_code == 503:
+        return "Portal unavailable (HTTP 503) – try again later"
+    if "not in allowlist" in low or "access denied" in low:
+        return "Portal blocked this server – check manually at ipindia.gov.in"
+    if "maintenance" in low and ("under" in low or "scheduled" in low):
+        return "Portal under maintenance – try again later"
+    if "cloudflare" in low and "ray id" in low:
+        return "Portal protected by Cloudflare – check manually at ipindia.gov.in"
+    return None
+
+
+# ── Design (no CAPTCHA) ───────────────────────────────────────────────────────
+
+def _scrape_design_requests(app_no):
     result = {"application_number": app_no, "status": None, "raw": ""}
-    # Normalise: format must be NNNNNN-001
     if not re.search(r"-\d{3}$", app_no):
         app_no = app_no + "-001"
     result["normalized_number"] = app_no
 
     try:
-        resp = _session.get(DESIGN_STATUS_URL, timeout=20, allow_redirects=True)
+        resp = _session.get(DESIGN_STATUS_URL, timeout=20)
         resp.raise_for_status()
+
+        block = _detect_block(resp.text, resp.status_code)
+        if block:
+            result["status"] = block
+            return result
+
+        _diagnose_html("DESIGN-GET", resp.text, resp.status_code, resp.url)
         soup = BeautifulSoup(resp.text, "lxml")
 
-        vs = (soup.find("input", {"id": "__VIEWSTATE"}) or {}).get("value", "")
-        ev = (soup.find("input", {"id": "__EVENTVALIDATION"}) or {}).get("value", "")
+        vs  = (soup.find("input", {"id": "__VIEWSTATE"}) or {}).get("value", "")
+        ev  = (soup.find("input", {"id": "__EVENTVALIDATION"}) or {}).get("value", "")
         vsg = (soup.find("input", {"id": "__VIEWSTATEGENERATOR"}) or {}).get("value", "")
+
+        # Discover field names dynamically instead of hardcoding
+        submit_btn = soup.find("input", {"type": "submit"}) or {}
+        submit_name  = submit_btn.get("name", "ctl00$cphBody$btnShowStatus")
+        submit_value = submit_btn.get("value", "Show Status")
+
+        text_inputs = [
+            inp for inp in soup.find_all("input", {"type": "text"})
+            if inp.get("name") and
+            any(kw in (inp.get("id","") + inp.get("name","")).lower()
+                for kw in ["application", "appno", "regno"])
+        ]
+        if not text_inputs:
+            text_inputs = soup.find_all("input", {"type": "text"})
+        app_field_name = (
+            text_inputs[0].get("name", "ctl00$cphBody$txtApplicationNumber")
+            if text_inputs else "ctl00$cphBody$txtApplicationNumber"
+        )
 
         payload = {
             "__VIEWSTATE": vs,
             "__VIEWSTATEGENERATOR": vsg,
             "__EVENTVALIDATION": ev,
-            "ctl00$cphBody$txtApplicationNumber": app_no,
-            "ctl00$cphBody$btnShowStatus": "Show Status",
+            app_field_name: app_no,
+            submit_name: submit_value,
         }
-        # POST to same URL; disable redirects so we don't lose the body on 301
-        resp2 = _session.post(
-            DESIGN_STATUS_URL, data=payload, timeout=25,
-            allow_redirects=True,
-        )
+        logger.debug(f"Design POST payload keys: {list(payload.keys())}")
+
+        resp2 = _session.post(DESIGN_STATUS_URL, data=payload, timeout=25)
         resp2.raise_for_status()
+        _diagnose_html("DESIGN-POST", resp2.text, resp2.status_code, resp2.url)
         result["raw"] = resp2.text[:3000]
         return _parse_design_html(resp2.text, result)
+
     except Exception as exc:
         logger.warning(f"Design requests failed for {app_no}: {exc}")
         result["error"] = str(exc)
         return result
 
 
-def _parse_design_html(html: str, result: dict) -> dict:
+def _parse_design_html(html, result):
     soup = BeautifulSoup(html, "lxml")
     for row in soup.select("table tr"):
         cells = row.find_all(["td", "th"])
@@ -103,25 +162,49 @@ def _parse_design_html(html: str, result: dict) -> dict:
 
     if "record not found" in html.lower():
         result["status"] = "Record Not Found"
-
     if "captcha" in html.lower() and not result.get("status"):
         result["error"] = "CAPTCHA_REQUIRED"
 
     return result
 
 
-# ── Trademark ────────────────────────────────────────────────────────────────
+# ── Trademark ─────────────────────────────────────────────────────────────────
 
-def _scrape_tm_requests(app_no: str) -> dict:
+def _scrape_tm_requests(app_no):
     result = {"application_number": app_no, "status": None, "raw": ""}
     try:
         resp = _session.get(TM_STATUS_URL, timeout=20)
         resp.raise_for_status()
+
+        block = _detect_block(resp.text, resp.status_code)
+        if block:
+            result["status"] = block
+            return result
+
+        _diagnose_html("TM-GET", resp.text, resp.status_code, resp.url)
         soup = BeautifulSoup(resp.text, "lxml")
 
         vs  = (soup.find("input", {"id": "__VIEWSTATE"}) or {}).get("value", "")
         ev  = (soup.find("input", {"id": "__EVENTVALIDATION"}) or {}).get("value", "")
         vsg = (soup.find("input", {"id": "__VIEWSTATEGENERATOR"}) or {}).get("value", "")
+
+        tm_input = (
+            soup.find("input", {"id": re.compile(r"txtTMNo", re.I)}) or
+            soup.find("input", {"name": re.compile(r"txtTMNo", re.I)}) or
+            soup.find("input", {"type": "text"})
+        )
+        tm_field_name = (
+            tm_input.get("name", "ctl00$ContentPlaceHolder1$txtTMNo")
+            if tm_input else "ctl00$ContentPlaceHolder1$txtTMNo"
+        )
+
+        submit_btn = (
+            soup.find("input", {"id": re.compile(r"btnShow", re.I)}) or
+            soup.find("input", {"type": "submit"}) or
+            {}
+        )
+        submit_name  = submit_btn.get("name", "ctl00$ContentPlaceHolder1$btnShow")
+        submit_value = submit_btn.get("value", "Show Status")
 
         payload = {
             "__EVENTTARGET": "",
@@ -130,22 +213,24 @@ def _scrape_tm_requests(app_no: str) -> dict:
             "__VIEWSTATEGENERATOR": vsg,
             "__EVENTVALIDATION": ev,
             "ctl00$ContentPlaceHolder1$hdnType": "T",
-            "ctl00$ContentPlaceHolder1$txtTMNo": app_no.strip(),
-            "ctl00$ContentPlaceHolder1$btnShow": "Show Status",
+            tm_field_name: app_no.strip(),
+            submit_name: submit_value,
         }
+        logger.debug(f"TM POST payload keys: {list(payload.keys())}")
+
         resp2 = _session.post(TM_STATUS_URL, data=payload, timeout=25)
         resp2.raise_for_status()
+        _diagnose_html("TM-POST", resp2.text, resp2.status_code, resp2.url)
         result["raw"] = resp2.text[:3000]
-        parsed = _parse_tm_html(resp2.text, result)
-        logger.debug(f"TM requests result for {app_no}: status={parsed.get('status')!r} error={parsed.get('error')!r}")
-        return parsed
+        return _parse_tm_html(resp2.text, result)
+
     except Exception as exc:
         logger.warning(f"TM requests failed for {app_no}: {exc}")
         result["error"] = str(exc)
         return result
 
 
-def _parse_tm_html(html: str, result: dict) -> dict:
+def _parse_tm_html(html, result):
     soup = BeautifulSoup(html, "lxml")
     for row in soup.select("table tr"):
         cells = row.find_all(["td", "th"])
@@ -175,69 +260,94 @@ def _parse_tm_html(html: str, result: dict) -> dict:
     return result
 
 
-# ── Playwright fallback ──────────────────────────────────────────────────────
+# ── Playwright fallback ───────────────────────────────────────────────────────
 
-# Candidate selectors for TM portal fields — tried in order
-_TM_INPUT_SELECTORS = [
-    "input[id*='txtTMNo']",
-    "input[name*='txtTMNo']",
-    "#ctl00_ContentPlaceHolder1_txtTMNo",
-    "input[type='text']",   # last resort: first text input
-]
-_TM_SUBMIT_SELECTORS = [
-    "input[id*='btnShow']",
-    "input[name*='btnShow']",
-    "#ctl00_ContentPlaceHolder1_btnShow",
-    "input[type='submit']",
-]
-_DESIGN_INPUT_SELECTORS = [
-    "input[id*='txtApplicationNumber']",
-    "input[name*='txtApplicationNumber']",
-    "#ctl00_cphBody_txtApplicationNumber",
-    "input[type='text']",
-]
-_DESIGN_SUBMIT_SELECTORS = [
-    "input[id*='btnShowStatus']",
-    "input[name*='btnShowStatus']",
-    "#ctl00_cphBody_btnShowStatus",
-    "input[type='submit']",
-]
+def _log_pw_inputs(page, label):
+    try:
+        inputs = page.evaluate("""() =>
+            Array.from(document.querySelectorAll('input,select,textarea')).map(el => ({
+                tag: el.tagName, id: el.id, name: el.name, type: el.type || ''
+            }))
+        """)
+        logger.info(f"[PW {label}] URL={page.url}  inputs={inputs}")
+    except Exception as e:
+        logger.info(f"[PW {label}] Could not enumerate inputs: {e}")
 
 
-def _find_and_fill(page, selectors: list[str], value: str, timeout: int = 15000) -> bool:
-    """Try each selector in turn; return True when one works."""
-    for sel in selectors:
-        try:
-            loc = page.locator(sel).first
-            loc.wait_for(state="visible", timeout=timeout)
-            loc.fill(value)
-            logger.debug(f"Filled {sel!r}")
-            return True
-        except Exception:
-            continue
-    return False
+def _pw_fill_dynamic(page, filing_type, value):
+    """Fill the application number input, discovering the selector via JS."""
+    if filing_type == "trademark":
+        keywords = ["tmno", "tm_no", "trademarknumber", "applicationno", "appno"]
+    else:
+        keywords = ["applicationnumber", "appno", "app_no", "registrationno"]
+
+    try:
+        selector = page.evaluate(f"""() => {{
+            const kws = {keywords};
+            for (const el of document.querySelectorAll('input[type="text"], input:not([type])')) {{
+                const combined = (el.id + el.name).toLowerCase();
+                if (kws.some(k => combined.includes(k))) {{
+                    return el.id ? '#' + el.id : '[name="' + el.name + '"]';
+                }}
+            }}
+            for (const el of document.querySelectorAll('input[type="text"]')) {{
+                if (el.offsetParent !== null) {{
+                    return el.id ? '#' + el.id : '[name="' + el.name + '"]';
+                }}
+            }}
+            return null;
+        }}""")
+        if not selector:
+            return False
+        logger.info(f"[PW {filing_type}] fill selector: {selector!r}")
+        page.fill(selector, value, timeout=10000)
+        return True
+    except Exception as e:
+        logger.warning(f"[PW {filing_type}] fill failed: {e}")
+        return False
 
 
-def _find_and_click(page, selectors: list[str], timeout: int = 10000) -> bool:
-    for sel in selectors:
-        try:
-            loc = page.locator(sel).first
-            loc.wait_for(state="visible", timeout=timeout)
-            loc.click()
-            logger.debug(f"Clicked {sel!r}")
-            return True
-        except Exception:
-            continue
-    return False
+def _pw_click_submit_dynamic(page, label):
+    try:
+        selector = page.evaluate("""() => {
+            for (const el of document.querySelectorAll('input[type="submit"],button[type="submit"],button')) {
+                const sig = ((el.id || '') + (el.value || '') + (el.textContent || '')).toLowerCase();
+                if (sig.includes('show') || sig.includes('submit') || sig.includes('check')) {
+                    if (el.id) return '#' + el.id;
+                    if (el.name) return '[name="' + el.name + '"]';
+                }
+            }
+            const s = document.querySelector('input[type="submit"],button[type="submit"]');
+            return s ? (s.id ? '#' + s.id : (s.name ? '[name="' + s.name + '"]' : null)) : null;
+        }""")
+        if selector:
+            logger.info(f"[PW {label}] click selector: {selector!r}")
+            page.click(selector, timeout=10000)
+        else:
+            logger.warning(f"[PW {label}] no submit button found")
+    except Exception as e:
+        logger.warning(f"[PW {label}] click failed: {e}")
 
 
-def _scrape_with_playwright(filing_type: str, app_no: str) -> dict:
+def _pw_blocked_status(page, label):
+    html = page.content()
+    low = html.lower()
+    if "403" in html[:300] or "access denied" in low or "not in allowlist" in low:
+        return "Portal blocked this server – check manually at ipindia.gov.in"
+    if "maintenance" in low:
+        return "Portal under maintenance – try again later"
+    if "cloudflare" in low and "ray id" in low:
+        return "Portal protected by Cloudflare – check manually at ipindia.gov.in"
+    logger.warning(f"[PW {label}] form input not found. Page snippet: {html[:800]}")
+    return "Could not reach portal form – check manually at ipindia.gov.in"
+
+
+def _scrape_with_playwright(filing_type, app_no):
     result = {"application_number": app_no, "status": None, "raw": ""}
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        result["error"] = "Playwright not installed"
-        result["status"] = "Could not retrieve status – scraper dependency missing"
+        result["status"] = "Could not retrieve status – Playwright not installed"
         return result
 
     with sync_playwright() as p:
@@ -245,13 +355,9 @@ def _scrape_with_playwright(filing_type: str, app_no: str) -> dict:
         try:
             browser = p.chromium.launch(
                 headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    "--ignore-certificate-errors",   # handle IP India SSL issues
-                ]
+                args=["--no-sandbox", "--disable-setuid-sandbox",
+                      "--disable-dev-shm-usage", "--disable-gpu",
+                      "--ignore-certificate-errors"],
             )
             context = browser.new_context(ignore_https_errors=True)
             page = context.new_page()
@@ -259,35 +365,37 @@ def _scrape_with_playwright(filing_type: str, app_no: str) -> dict:
 
             if filing_type == "design":
                 norm = app_no if re.search(r"-\d{3}$", app_no) else app_no + "-001"
-                # Use domcontentloaded — networkidle hangs on this portal
                 page.goto(DESIGN_STATUS_URL, wait_until="domcontentloaded", timeout=30000)
-                filled = _find_and_fill(page, _DESIGN_INPUT_SELECTORS, norm)
-                if not filled:
-                    result["error"] = "Could not locate application number input"
-                    result["status"] = "Manual check required – portal layout changed"
+                _log_pw_inputs(page, "DESIGN")
+                block = _detect_block(page.content(), 200)
+                if block:
+                    result["status"] = block
                     return result
-                clicked = _find_and_click(page, _DESIGN_SUBMIT_SELECTORS)
-                if clicked:
-                    page.wait_for_load_state("domcontentloaded", timeout=20000)
+                if not _pw_fill_dynamic(page, "design", norm):
+                    result["status"] = _pw_blocked_status(page, "DESIGN")
+                    return result
+                _pw_click_submit_dynamic(page, "design")
+                page.wait_for_load_state("domcontentloaded", timeout=20000)
                 html = page.content()
                 result["raw"] = html[:3000]
                 result = _parse_design_html(html, result)
 
             elif filing_type == "trademark":
-                anticaptcha_key = os.environ.get("ANTICAPTCHA_KEY", "")
                 page.goto(TM_STATUS_URL, wait_until="domcontentloaded", timeout=35000)
-                filled = _find_and_fill(page, _TM_INPUT_SELECTORS, app_no.strip(), timeout=20000)
-                if not filled:
-                    result["error"] = "Could not locate TM number input"
-                    result["status"] = "Manual check required – portal layout changed"
+                _log_pw_inputs(page, "TM")
+                block = _detect_block(page.content(), 200)
+                if block:
+                    result["status"] = block
                     return result
-
+                if not _pw_fill_dynamic(page, "trademark", app_no.strip()):
+                    result["status"] = _pw_blocked_status(page, "TM")
+                    return result
+                anticaptcha_key = os.environ.get("ANTICAPTCHA_KEY", "")
                 if anticaptcha_key:
                     result = _solve_and_submit_tm(page, anticaptcha_key, app_no, result)
                 else:
-                    clicked = _find_and_click(page, _TM_SUBMIT_SELECTORS)
-                    if clicked:
-                        page.wait_for_load_state("domcontentloaded", timeout=20000)
+                    _pw_click_submit_dynamic(page, "trademark")
+                    page.wait_for_load_state("domcontentloaded", timeout=20000)
                     html = page.content()
                     result["raw"] = html[:3000]
                     result = _parse_tm_html(html, result)
@@ -300,7 +408,6 @@ def _scrape_with_playwright(filing_type: str, app_no: str) -> dict:
 
         except Exception as exc:
             logger.warning(f"Playwright error for {filing_type}/{app_no}: {exc}")
-            result["error"] = str(exc)
             if not result.get("status"):
                 result["status"] = f"Scrape failed – {exc}"
         finally:
@@ -322,7 +429,7 @@ def _solve_and_submit_tm(page, anticaptcha_key, app_no, result):
         captcha_text = solver.solve_and_return_solution(None, body=b64)
         if captcha_text:
             page.fill("input[id*='captcha'], input[name*='captcha']", captcha_text)
-            _find_and_click(page, _TM_SUBMIT_SELECTORS)
+            _pw_click_submit_dynamic(page, "tm-captcha")
             page.wait_for_load_state("domcontentloaded", timeout=20000)
             html = page.content()
             result["raw"] = html[:3000]
@@ -330,25 +437,26 @@ def _solve_and_submit_tm(page, anticaptcha_key, app_no, result):
         else:
             result["status"] = "CAPTCHA solve failed – try again"
     except Exception as exc:
-        result["error"] = f"anticaptcha: {exc}"
         result["status"] = "CAPTCHA solve error – try again later"
+        result["error"] = f"anticaptcha: {exc}"
     return result
 
 
-# ── Public API ───────────────────────────────────────────────────────────────
+# ── Public API ────────────────────────────────────────────────────────────────
 
-def check_status(filing_type: str, application_number: str) -> dict:
+def check_status(filing_type, application_number):
     filing_type = filing_type.lower()
 
     if filing_type == "trademark":
         result = _scrape_tm_requests(application_number)
-        if not result.get("status") or result.get("error"):
+        # Only Playwright-fallback if requests genuinely errored — not if we got a block message
+        if not result.get("status") and result.get("error"):
             logger.info(f"Falling back to Playwright for TM {application_number}")
             result = _scrape_with_playwright("trademark", application_number)
 
     elif filing_type == "design":
         result = _scrape_design_requests(application_number)
-        if not result.get("status") or result.get("error") == "CAPTCHA_REQUIRED":
+        if not result.get("status") and result.get("error"):
             logger.info(f"Falling back to Playwright for design {application_number}")
             result = _scrape_with_playwright("design", application_number)
 
